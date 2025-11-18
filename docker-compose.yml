@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://portfolio_user:portfolio_pass@postgres:5432/portfolio_db
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - ENVIRONMENT=development
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks:
+      - portfolio-network
+    volumes:
+      - ./backend:/app
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=portfolio_user
+      - POSTGRES_PASSWORD=portfolio_pass
+      - POSTGRES_DB=portfolio_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - portfolio-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - portfolio-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  portfolio-network:
+    driver: bridge
