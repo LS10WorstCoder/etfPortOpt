@@ -13,7 +13,7 @@ services:
     depends_on:
       - postgres
       - redis
-    restart: unless-stopped
+    restart: unless-sto pped
     networks:
       - portfolio-network
     volumes:
