@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
 from config import settings
+from database import engine
+from api import auth
 
 # Configure logging
 logging.basicConfig(
@@ -23,8 +25,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     logger.info("Starting Portfolio Analyzer application...")
+    logger.info(f"Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}")
     yield
     logger.info("Shutting down Portfolio Analyzer application...")
+    engine.dispose()
 
 
 # Initialize FastAPI application
@@ -43,6 +47,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include API routers
+app.include_router(auth.router, prefix="/api")
 
 
 @app.get("/")
