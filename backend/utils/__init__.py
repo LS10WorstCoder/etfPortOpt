@@ -1,1 +1,1 @@
-"""Utility functions package"""
+"""Utility functions for security and helpers."""

@@ -20,11 +20,6 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
     
-    # Supabase Authentication
-    SUPABASE_URL: str = "https://your-project.supabase.co"
-    SUPABASE_KEY: str = "your-anon-key-here"
-    SUPABASE_JWT_SECRET: str = "your-jwt-secret-here"
-    
     # Environment
     ENVIRONMENT: str = "development"
     

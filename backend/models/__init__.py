@@ -1,1 +1,1 @@
-"""Database models package"""
+"""SQLAlchemy database models."""

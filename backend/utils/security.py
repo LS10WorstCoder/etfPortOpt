@@ -1,47 +1,84 @@
 """
-Security utilities for Supabase authentication.
+Security utilities for password hashing and JWT token management.
 """
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
+import bcrypt
 from config import settings
 
-# JWT algorithm for Supabase tokens
+# JWT settings
 ALGORITHM = "HS256"
 
 
-def verify_supabase_token(token: str) -> Optional[dict]:
+def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Verify a Supabase JWT token.
+    Verify a plain password against a hashed password using bcrypt.
     
     Args:
-        token: The JWT token from Supabase client
+        plain_password: The plain text password to verify
+        hashed_password: The bcrypt hashed password from database
         
     Returns:
-        Dictionary with user info if valid, None if invalid
+        True if password matches, False otherwise
+    """
+    return bcrypt.checkpw(
+        plain_password.encode('utf-8'),
+        hashed_password.encode('utf-8')
+    )
+
+
+def get_password_hash(password: str) -> str:
+    """
+    Hash a plain password using bcrypt.
+    
+    Args:
+        password: The plain text password to hash
+        
+    Returns:
+        Bcrypt hashed password string
+    """
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT access token.
+    
+    Args:
+        data: Dictionary of claims to encode in the token (typically {"sub": user_id})
+        expires_delta: Optional custom expiration time, defaults to 30 minutes
+        
+    Returns:
+        Encoded JWT token string
+    """
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=30)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
+    
+    return encoded_jwt
+
+
+def decode_access_token(token: str) -> Optional[dict]:
+    """
+    Decode and verify a JWT access token.
+    
+    Args:
+        token: The JWT token string to decode
+        
+    Returns:
+        Dictionary of token claims if valid, None if invalid
     """
     try:
-        payload = jwt.decode(
-            token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=[ALGORITHM],
-            audience="authenticated"
-        )
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         return payload
     except JWTError:
         return None
-
-
-def extract_user_id(token: str) -> Optional[str]:
-    """
-    Extract user ID from Supabase token.
-    
-    Args:
-        token: Supabase JWT token
-        
-    Returns:
-        User UUID if valid, None otherwise
-    """
-    payload = verify_supabase_token(token)
-    if payload:
-        return payload.get("sub")  # Supabase uses 'sub' for user ID
-    return None

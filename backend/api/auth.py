@@ -1,36 +1,36 @@
 """
-Authentication API endpoints using Supabase.
+Authentication API endpoints for user registration and login.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from supabase import create_client, Client
-from typing import Optional
+from sqlalchemy.exc import IntegrityError
 
 from database import get_db
 from models.user import User
 from schemas.user import UserRegister, UserLogin, Token, UserResponse
-from utils.security import verify_supabase_token, extract_user_id
-from config import settings
+from utils.security import (
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    decode_access_token
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# HTTP Bearer scheme for token extraction
-security = HTTPBearer()
-
-# Supabase client
-supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+# OAuth2 scheme for token extraction from Authorization header
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ) -> User:
     """
-    Dependency to get the current authenticated user from Supabase token.
+    Dependency to get the current authenticated user from JWT token.
     
     Args:
-        credentials: Bearer token from Authorization header
+        token: JWT token from Authorization header
         db: Database session
         
     Returns:
@@ -39,119 +39,105 @@ def get_current_user(
     Raises:
         HTTPException: If token is invalid or user not found
     """
-    token = credentials.credentials
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     
-    # Verify Supabase token
-    user_id = extract_user_id(token)
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # Decode token
+    payload = decode_access_token(token)
+    if payload is None:
+        raise credentials_exception
     
-    # Get or create user in local database
+    user_id: str = payload.get("sub")
+    if user_id is None:
+        raise credentials_exception
+    
+    # Get user from database
     user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        # Create local user record from Supabase user
-        try:
-            supabase_user = supabase.auth.get_user(token)
-            user = User(
-                id=user_id,
-                email=supabase_user.user.email,
-                hashed_password="",  # Not needed with Supabase
-                is_verified=True
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not retrieve user information"
-            )
+    if user is None:
+        raise credentials_exception
     
     return user
 
 
-@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-async def register(user_data: UserRegister):
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     """
-    Register a new user via Supabase.
+    Register a new user account.
     
     Args:
         user_data: User registration data (email, password)
+        db: Database session
         
     Returns:
-        JWT access token from Supabase
+        Created user object
         
     Raises:
-        HTTPException: If registration fails
+        HTTPException: If email already exists
     """
-    try:
-        # Register user with Supabase
-        response = supabase.auth.sign_up({
-            "email": user_data.email,
-            "password": user_data.password
-        })
-        
-        if not response.user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Registration failed. Email may already be registered."
-            )
-        
-        return {
-            "access_token": response.session.access_token,
-            "token_type": "bearer"
-        }
-    
-    except Exception as e:
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Registration failed: {str(e)}"
+            detail="Email already registered"
         )
+    
+    # Hash password
+    hashed_password = get_password_hash(user_data.password)
+    
+    # Create new user
+    new_user = User(
+        email=user_data.email,
+        hashed_password=hashed_password
+    )
+    
+    try:
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    return new_user
 
 
 @router.post("/login", response_model=Token)
-async def login(user_data: UserLogin):
+async def login(user_data: UserLogin, db: Session = Depends(get_db)):
     """
-    Authenticate user via Supabase and return JWT token.
+    Authenticate user and return JWT token.
     
     Args:
         user_data: User login credentials (email, password)
+        db: Database session
         
     Returns:
-        JWT access token from Supabase
+        JWT access token
         
     Raises:
         HTTPException: If credentials are invalid
     """
-    try:
-        # Authenticate with Supabase
-        response = supabase.auth.sign_in_with_password({
-            "email": user_data.email,
-            "password": user_data.password
-        })
-        
-        if not response.session:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        
-        return {
-            "access_token": response.session.access_token,
-            "token_type": "bearer"
-        }
+    # Find user by email
+    user = db.query(User).filter(User.email == user_data.email).first()
     
-    except Exception as e:
+    # Verify user exists and password is correct
+    if not user or not verify_password(user_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Create access token
+    access_token = create_access_token(data={"sub": str(user.id)})
+    
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.get("/me", response_model=UserResponse)
