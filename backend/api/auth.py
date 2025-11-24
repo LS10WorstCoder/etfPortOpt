@@ -1,36 +1,36 @@
 """
-Authentication API endpoints for user registration and login.
+Authentication API endpoints using Supabase.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from supabase import create_client, Client
+from typing import Optional
 
 from database import get_db
 from models.user import User
 from schemas.user import UserRegister, UserLogin, Token, UserResponse
-from utils.security import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    decode_access_token
-)
+from utils.security import verify_supabase_token, extract_user_id
+from config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# OAuth2 scheme for token extraction from Authorization header
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+# HTTP Bearer scheme for token extraction
+security = HTTPBearer()
+
+# Supabase client
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
     """
-    Dependency to get the current authenticated user from JWT token.
+    Dependency to get the current authenticated user from Supabase token.
     
     Args:
-        token: JWT token from Authorization header
+        credentials: Bearer token from Authorization header
         db: Database session
         
     Returns:
@@ -39,135 +39,119 @@ def get_current_user(
     Raises:
         HTTPException: If token is invalid or user not found
     """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    token = credentials.credentials
     
-    # Decode token
-    payload = decode_access_token(token)
-    if payload is None:
-        raise credentials_exception
+    # Verify Supabase token
+    user_id = extract_user_id(token)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
-    user_id: str = payload.get("sub")
-    if user_id is None:
-        raise credentials_exception
-    
-    # Get user from database
+    # Get or create user in local database
     user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise credentials_exception
+    if not user:
+        # Create local user record from Supabase user
+        try:
+            supabase_user = supabase.auth.get_user(token)
+            user = User(
+                id=user_id,
+                email=supabase_user.user.email,
+                hashed_password="",  # Not needed with Supabase
+                is_verified=True
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not retrieve user information"
+            )
     
     return user
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(user_data: UserRegister, db: Session = Depends(get_db)):
+@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+async def register(user_data: UserRegister):
     """
-    Register a new user account.
+    Register a new user via Supabase.
     
     Args:
         user_data: User registration data (email, password)
-        db: Database session
         
     Returns:
-        Created user object
+        JWT access token from Supabase
         
     Raises:
-        HTTPException: If email already exists
+        HTTPException: If registration fails
     """
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Hash password
-    hashed_password = get_password_hash(user_data.password)
-    
-    # Create new user
-    new_user = User(
-        email=user_data.email,
-        hashed_password=hashed_password
-    )
-    
     try:
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-    except IntegrityError:
-        db.rollback()
+        # Register user with Supabase
+        response = supabase.auth.sign_up({
+            "email": user_data.email,
+            "password": user_data.password
+        })
+        
+        if not response.user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Registration failed. Email may already be registered."
+            )
+        
+        return {
+            "access_token": response.session.access_token,
+            "token_type": "bearer"
+        }
+    
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail=f"Registration failed: {str(e)}"
         )
-    
-    return new_user
 
 
 @router.post("/login", response_model=Token)
-async def login(user_data: UserLogin, db: Session = Depends(get_db)):
+async def login(user_data: UserLogin):
     """
-    Authenticate user and return JWT token.
+    Authenticate user via Supabase and return JWT token.
     
     Args:
         user_data: User login credentials (email, password)
-        db: Database session
         
     Returns:
-        JWT access token
+        JWT access token from Supabase
         
     Raises:
         HTTPException: If credentials are invalid
     """
-    # Find user by email
-    user = db.query(User).filter(User.email == user_data.email).first()
-    
-    # Verify user exists and password is correct
-    if not user or not verify_password(user_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Create access token
-    access_token = create_access_token(data={"sub": str(user.id)})
-    
-    return {"access_token": access_token, "token_type": "bearer"}
-
-
-@router.post("/token", response_model=Token)
-async def login_oauth2(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
-):
-    """
-    OAuth2-compatible login endpoint (for FastAPI docs authentication).
-    
-    Args:
-        form_data: OAuth2 form with username (email) and password
-        db: Database session
+    try:
+        # Authenticate with Supabase
+        response = supabase.auth.sign_in_with_password({
+            "email": user_data.email,
+            "password": user_data.password
+        })
         
-    Returns:
-        JWT access token
-    """
-    # OAuth2 uses 'username' field, we treat it as email
-    user = db.query(User).filter(User.email == form_data.username).first()
+        if not response.session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        return {
+            "access_token": response.session.access_token,
+            "token_type": "bearer"
+        }
     
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    access_token = create_access_token(data={"sub": str(user.id)})
-    
-    return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.get("/me", response_model=UserResponse)
