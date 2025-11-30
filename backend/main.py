@@ -12,6 +12,12 @@ from datetime import datetime
 from config import settings
 from database import engine
 from api import auth
+from api import portfolios
+from api import holdings
+from api import market
+from api import analytics
+from api import optimization
+from api import csv_import
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +32,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan events"""
     logger.info("Starting Portfolio Analyzer application...")
     logger.info(f"Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}")
+    
     yield
     logger.info("Shutting down Portfolio Analyzer application...")
     engine.dispose()
@@ -50,6 +57,12 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(auth.router, prefix="/api")
+app.include_router(portfolios.router, prefix="/api")
+app.include_router(holdings.router, prefix="/api")
+app.include_router(market.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
+app.include_router(optimization.router, prefix="/api")
+app.include_router(csv_import.router, prefix="/api")
 
 
 @app.get("/")

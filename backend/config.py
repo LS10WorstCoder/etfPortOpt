@@ -9,25 +9,19 @@ from typing import List
 class Settings(BaseSettings):
     """Application settings"""
     
-    # Database
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/portfolio_db"
+    # Supabase
+    SUPABASE_URL: str = "https://your-project.supabase.co"
+    SUPABASE_KEY: str = "your-anon-key-here"
+    SUPABASE_SERVICE_KEY: str = "your-service-role-key-here"  # For admin operations
     
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379"
-    
-    # Security
-    SECRET_KEY: str = "your-secret-key-here-change-in-production"
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    # Database (Supabase Postgres)
+    DATABASE_URL: str = "postgresql://postgres:[YOUR-PASSWORD]@db.your-project.supabase.co:5432/postgres"
     
     # Environment
     ENVIRONMENT: str = "development"
     
     # CORS - will be split on comma
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001"
-    
-    # Rate Limiting
-    RATE_LIMIT_PER_MINUTE: int = 60
     
     @property
     def cors_origins_list(self) -> List[str]:

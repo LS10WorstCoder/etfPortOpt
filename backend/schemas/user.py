@@ -45,9 +45,7 @@ class UserResponse(BaseModel):
     """Schema for user data in responses."""
     id: uuid.UUID
     email: str
-    is_verified: bool
     created_at: datetime
-    updated_at: datetime
     
     class Config:
         from_attributes = True  # Allows SQLAlchemy model conversion
