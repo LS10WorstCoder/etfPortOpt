@@ -34,7 +34,7 @@ class OptimizationRequest(BaseModel):
 
 @router.post("/portfolios/{portfolio_id}/optimize")
 async def optimize_portfolio(
-    portfolio_id: int,
+    portfolio_id: str,
     strategy: str = Query(..., regex="^(max_sharpe|min_volatility|equal_weight)$"),
     period: str = Query(default="1y", regex="^(1y|2y|5y|10y)$"),
     save_results: bool = Query(default=True),
@@ -146,7 +146,7 @@ async def optimize_portfolio(
 
 @router.get("/portfolios/{portfolio_id}/optimizations/history")
 async def get_optimization_history(
-    portfolio_id: int,
+    portfolio_id: str,
     limit: int = Query(default=10, ge=1, le=100),
     strategy: Optional[str] = Query(default=None, regex="^(max_sharpe|min_volatility|equal_weight)$"),
     current_user: User = Depends(get_current_user),

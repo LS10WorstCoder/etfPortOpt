@@ -17,7 +17,7 @@ router = APIRouter(tags=["analytics"])
 
 @router.post("/portfolios/{portfolio_id}/analyze")
 async def analyze_portfolio(
-    portfolio_id: int,
+    portfolio_id: str,
     period: str = Query(default="1y", regex="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
     save_results: bool = Query(default=True),
     use_cache: bool = Query(default=True),
@@ -65,15 +65,17 @@ async def analyze_portfolio(
         
         if latest_analytics:
             # Check if cache is fresh (< 1 hour old)
-            cache_age = datetime.utcnow() - latest_analytics.created_at
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            cache_age = now - latest_analytics.created_at.replace(tzinfo=timezone.utc)
             is_fresh = cache_age < timedelta(hours=1)
             
             # Check if holdings changed since last analysis
             holdings_last_modified = max(
-                (h.created_at for h in holdings),
-                default=portfolio.updated_at
+                (h.created_at.replace(tzinfo=timezone.utc) for h in holdings),
+                default=portfolio.updated_at.replace(tzinfo=timezone.utc)
             )
-            cache_is_newer = latest_analytics.created_at > holdings_last_modified
+            cache_is_newer = latest_analytics.created_at.replace(tzinfo=timezone.utc) > holdings_last_modified
             
             if is_fresh and cache_is_newer:
                 # Return cached results
@@ -133,7 +135,7 @@ async def analyze_portfolio(
 
 @router.get("/portfolios/{portfolio_id}/analytics/history")
 async def get_analytics_history(
-    portfolio_id: int,
+    portfolio_id: str,
     limit: int = Query(default=10, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)

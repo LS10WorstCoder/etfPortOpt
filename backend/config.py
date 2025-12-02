@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = "your-service-role-key-here"  # For admin operations
     
     # Database (Supabase Postgres)
-    DATABASE_URL: str = "postgresql://postgres:[YOUR-PASSWORD]@db.your-project.supabase.co:5432/postgres"
+    DATABASE_URL: str = "postgresql://postgres:Poi09q13??!!@db.your-project.supabase.co:5432/postgres"
     
     # Environment
     ENVIRONMENT: str = "development"

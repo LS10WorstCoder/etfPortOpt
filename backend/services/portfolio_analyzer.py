@@ -233,6 +233,10 @@ class PortfolioAnalyzer:
         # Get portfolio value
         portfolio_value = self.get_portfolio_value()
         
+        # Check minimum holdings requirement
+        if len(self.tickers) < 2:
+            raise ValueError("Portfolio must have at least 2 different holdings for analysis")
+        
         # Calculate returns
         returns_df = self.calculate_returns()
         portfolio_returns = self.calculate_portfolio_returns(returns_df)
@@ -246,12 +250,12 @@ class PortfolioAnalyzer:
         correlation_matrix = self.calculate_correlation_matrix(returns_df)
         
         return {
-            'total_value': portfolio_value['total_value'],
+            'total_value': float(portfolio_value['total_value']),
             'annual_return': float(annual_return),
-            'volatility': volatility,
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_drawdown,
-            'var_95': var_95,
+            'volatility': float(volatility),
+            'sharpe_ratio': float(sharpe_ratio),
+            'max_drawdown': float(max_drawdown),
+            'var_95': float(var_95),
             'correlation_matrix': correlation_matrix,
             'holdings': portfolio_value['holdings'],
             'period': self.period,

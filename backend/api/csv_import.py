@@ -25,7 +25,7 @@ MAX_HOLDINGS = 100  # Same limit as holdings API
 
 @router.post("/portfolios/{portfolio_id}/import", response_model=CSVImportResponse)
 async def import_holdings_csv(
-    portfolio_id: int,
+    portfolio_id: str,
     file: UploadFile = File(...),
     overwrite: bool = Query(default=False),
     validate_tickers: bool = Query(default=True),
@@ -226,7 +226,7 @@ async def import_holdings_csv(
 
 @router.get("/portfolios/{portfolio_id}/export")
 async def export_holdings_csv(
-    portfolio_id: int,
+    portfolio_id: str,
     include_header: bool = Query(default=True),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
