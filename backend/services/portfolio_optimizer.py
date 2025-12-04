@@ -16,16 +16,22 @@ class PortfolioOptimizer:
     TRADING_DAYS_PER_YEAR = TRADING_DAYS_PER_YEAR
     RISK_FREE_RATE = RISK_FREE_RATE
     
-    def __init__(self, tickers: List[str], period: str = "1y"):
+    def __init__(self, tickers: List[str], period: str = "1y", whole_shares: bool = False, target_duration: str = "1y", max_drawdown: Optional[float] = None):
         """
         Initialize portfolio optimizer.
         
         Args:
             tickers: List of ticker symbols
             period: Historical period for analysis ('1y', '2y', '5y', etc.)
+            whole_shares: Whether to round allocations to whole shares (for retirement accounts)
+            target_duration: Investment horizon ('6m', '1y', '2y', '3y', '4y', '5y', '10y') - affects risk/return scaling
+            max_drawdown: Maximum allowed drawdown constraint (0.10 = 10% max loss)
         """
         self.tickers = tickers
         self.period = period
+        self.whole_shares = whole_shares
+        self.target_duration = target_duration
+        self.max_drawdown = max_drawdown
         self.analyzer = None  # Will be created lazily
         self.returns_df = None
         self.mean_returns = None
@@ -57,18 +63,24 @@ class PortfolioOptimizer:
     
     def calculate_statistics(self):
         """
-        Calculate mean returns and covariance matrix.
+        Calculate mean returns and covariance matrix scaled to target duration.
         
-        Reuses data fetched by PortfolioAnalyzer.
+        For shorter durations (6m), we scale returns and volatility appropriately:
+        - Returns scale linearly with time
+        - Volatility scales with sqrt(time)
         """
         if self.returns_df is None:
             self.fetch_historical_data()
         
-        # Annualized mean returns
-        self.mean_returns = self.returns_df.mean() * self.TRADING_DAYS_PER_YEAR
+        # Get trading days for target duration
+        from utils.financial import DURATION_TRADING_DAYS
+        target_days = DURATION_TRADING_DAYS.get(self.target_duration, self.TRADING_DAYS_PER_YEAR)
         
-        # Annualized covariance matrix
-        self.cov_matrix = self.returns_df.cov() * self.TRADING_DAYS_PER_YEAR
+        # Scale mean returns to target duration
+        self.mean_returns = self.returns_df.mean() * target_days
+        
+        # Scale covariance matrix to target duration
+        self.cov_matrix = self.returns_df.cov() * target_days
     
     def portfolio_performance(self, weights: np.ndarray) -> Tuple[float, float, float]:
         """
@@ -76,13 +88,13 @@ class PortfolioOptimizer:
         
         This is different from PortfolioAnalyzer metrics because it calculates
         expected future performance based on historical statistics, not actual
-        historical performance.
+        historical performance. Metrics are scaled to target_duration.
         
         Args:
             weights: Array of portfolio weights
             
         Returns:
-            Tuple of (annual_return, volatility, sharpe_ratio)
+            Tuple of (period_return, volatility, sharpe_ratio) scaled to target duration
         """
         # Portfolio expected return (already annualized from mean_returns)
         portfolio_return = np.dot(weights, self.mean_returns)
@@ -105,6 +117,39 @@ class PortfolioOptimizer:
         """Objective function for min volatility optimization."""
         _, volatility, _ = self.portfolio_performance(weights)
         return volatility
+    
+    def _risk_contribution(self, weights: np.ndarray) -> np.ndarray:
+        """
+        Calculate marginal risk contribution for each asset.
+        
+        Reuses cached covariance matrix from calculate_statistics().
+        
+        Args:
+            weights: Portfolio weights
+            
+        Returns:
+            Array of risk contributions (sums to portfolio volatility)
+        """
+        portfolio_variance = np.dot(weights.T, np.dot(self.cov_matrix, weights))
+        portfolio_volatility = np.sqrt(portfolio_variance)
+        
+        # Marginal contribution to risk (MCR)
+        mcr = np.dot(self.cov_matrix, weights) / portfolio_volatility if portfolio_volatility > 0 else np.zeros(len(weights))
+        
+        # Risk contribution = weight * MCR
+        risk_contrib = weights * mcr
+        
+        return risk_contrib
+    
+    def _risk_parity_objective(self, weights: np.ndarray) -> float:
+        """
+        Objective function for equal risk contribution strategy.
+        
+        Minimizes variance of risk contributions (forces equal risk).
+        """
+        risk_contrib = self._risk_contribution(weights)
+        target_risk = np.mean(risk_contrib)
+        return np.sum((risk_contrib - target_risk) ** 2)
     
     def optimize(
         self,
@@ -134,6 +179,10 @@ class PortfolioOptimizer:
         if strategy == 'equal_weight':
             return self._equal_weight_optimization()
         
+        # Equal risk strategy
+        if strategy == 'equal_risk':
+            return self._equal_risk_optimization(constraints)
+        
         # Setup optimization
         n_assets = len(self.tickers)
         initial_guess = np.array([1.0 / n_assets] * n_assets)
@@ -141,8 +190,18 @@ class PortfolioOptimizer:
         # Build bounds (min/max for each weight)
         bounds = self._build_bounds(constraints)
         
+        # Constraints list
+        optimization_constraints = []
+        
         # Constraint: weights sum to 1
-        weight_constraint = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}
+        optimization_constraints.append({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+        
+        # Constraint: maximum drawdown (if specified)
+        if self.max_drawdown is not None:
+            optimization_constraints.append({
+                'type': 'ineq',
+                'fun': lambda w: self.max_drawdown - self._calculate_historical_drawdown(w)
+            })
         
         # Select objective function
         if strategy == 'max_sharpe':
@@ -159,7 +218,7 @@ class PortfolioOptimizer:
                 x0=initial_guess,
                 method='SLSQP',
                 bounds=bounds,
-                constraints=weight_constraint,
+                constraints=optimization_constraints,
                 options={'maxiter': 1000, 'ftol': 1e-9}
             )
             
@@ -209,6 +268,49 @@ class PortfolioOptimizer:
         
         return self._format_results(weights, 'equal_weight', error=error)
     
+    def _equal_risk_optimization(self, constraints: Optional[Dict] = None) -> Dict:
+        """
+        Equal risk contribution (risk parity) strategy.
+        
+        Each asset contributes equally to portfolio risk.
+        """
+        n_assets = len(self.tickers)
+        initial_guess = np.array([1.0 / n_assets] * n_assets)
+        
+        # Build bounds
+        bounds = self._build_bounds(constraints)
+        
+        # Constraints list
+        optimization_constraints = []
+        optimization_constraints.append({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+        
+        if self.max_drawdown is not None:
+            optimization_constraints.append({
+                'type': 'ineq',
+                'fun': lambda w: self.max_drawdown - self._calculate_historical_drawdown(w)
+            })
+        
+        try:
+            result = minimize(
+                fun=self._risk_parity_objective,
+                x0=initial_guess,
+                method='SLSQP',
+                bounds=bounds,
+                constraints=optimization_constraints,
+                options={'maxiter': 1000, 'ftol': 1e-9}
+            )
+            
+            if not result.success:
+                raise ValueError(f"Risk parity optimization failed: {result.message}")
+            
+            optimal_weights = result.x
+            
+        except Exception as e:
+            # Fallback to equal weight
+            return self._equal_weight_optimization(error=str(e))
+        
+        return self._format_results(optimal_weights, 'equal_risk', constrained=bool(constraints))
+    
     def _single_ticker_optimization(self) -> Dict:
         """Handle single ticker case."""
         weights = np.array([1.0])
@@ -218,6 +320,40 @@ class PortfolioOptimizer:
             self.calculate_statistics()
         
         return self._format_results(weights, 'single_ticker')
+    
+    def _convert_to_whole_shares(
+        self,
+        weights: np.ndarray,
+        total_value: float,
+        current_prices: Dict[str, float]
+    ) -> np.ndarray:
+        """
+        Convert fractional weights to whole-share allocations.
+        
+        Used for retirement accounts (Roth IRA, Traditional IRA, 401k) where
+        fractional shares typically aren't allowed.
+        
+        Args:
+            weights: Fractional weight array
+            total_value: Total portfolio value
+            current_prices: Current price for each ticker
+            
+        Returns:
+            Adjusted weights based on whole shares
+        """
+        # Calculate dollar allocation per ticker
+        dollar_amounts = weights * total_value
+        
+        # Calculate whole shares per ticker
+        whole_shares_array = np.floor(dollar_amounts / np.array([current_prices[t] for t in self.tickers]))
+        
+        # Calculate actual dollar value with whole shares
+        actual_values = whole_shares_array * np.array([current_prices[t] for t in self.tickers])
+        
+        # Recalculate weights (may not sum to exactly 1 due to cash remainder)
+        new_weights = actual_values / actual_values.sum() if actual_values.sum() > 0 else weights
+        
+        return new_weights
     
     def _format_results(
         self,
@@ -244,7 +380,7 @@ class PortfolioOptimizer:
             for ticker, weight in zip(self.tickers, weights)
         }
         
-        # Calculate performance metrics
+        # Calculate performance metrics (reuses cached statistics)
         annual_return, volatility, sharpe_ratio = self.portfolio_performance(weights)
         
         result = {
@@ -254,11 +390,106 @@ class PortfolioOptimizer:
             'expected_volatility': volatility,
             'sharpe_ratio': sharpe_ratio,
             'period': self.period,
+            'target_duration': self.target_duration,
             'constrained': constrained,
+            'whole_shares': self.whole_shares,
             'optimized_at': datetime.now().isoformat()
         }
+        
         
         if error:
             result['warning'] = f"Optimization failed, using fallback: {error}"
         
         return result
+    
+    def monte_carlo_simulation(
+        self,
+        weights: np.ndarray,
+        n_simulations: int = 10000,
+        confidence_level: int = 95
+    ) -> Dict:
+        """
+        Run Monte Carlo simulation for portfolio outcomes using Cholesky decomposition.
+        
+        This method preserves the correlation structure between assets, providing
+        more realistic simulations than independent random draws.
+        
+        Reuses cached mean_returns and cov_matrix to avoid re-calculation.
+        
+        Args:
+            weights: Portfolio weights
+            n_simulations: Number of simulations to run
+            confidence_level: Confidence level (80, 90, or 95)
+            
+        Returns:
+            Dictionary with simulation results including skewness and kurtosis
+        """
+        # Ensure statistics are calculated
+        if self.mean_returns is None:
+            self.calculate_statistics()
+        
+        # Cholesky decomposition of covariance matrix
+        # This preserves correlation structure between assets
+        try:
+            L = np.linalg.cholesky(self.cov_matrix)
+        except np.linalg.LinAlgError:
+            # If covariance matrix is not positive definite, fall back to simple method
+            portfolio_return, portfolio_volatility, _ = self.portfolio_performance(weights)
+            simulated_returns = np.random.normal(
+                loc=portfolio_return,
+                scale=portfolio_volatility,
+                size=n_simulations
+            )
+            method = 'simple'
+        else:
+            # Generate correlated random returns for each asset
+            simulated_portfolio_returns = np.zeros(n_simulations)
+            
+            for i in range(n_simulations):
+                # Independent standard normal draws
+                z = np.random.normal(0, 1, len(self.tickers))
+                
+                # Transform to correlated returns using Cholesky decomposition
+                # This maintains the correlation structure from the covariance matrix
+                asset_returns = self.mean_returns + L @ z
+                
+                # Calculate portfolio return for this simulation
+                simulated_portfolio_returns[i] = np.dot(weights, asset_returns)
+            
+            simulated_returns = simulated_portfolio_returns
+            method = 'cholesky'
+        
+        # Calculate percentiles for confidence interval
+        lower_percentile = (100 - confidence_level) / 2
+        upper_percentile = 100 - lower_percentile
+        
+        confidence_interval = (
+            float(np.percentile(simulated_returns, lower_percentile)),
+            float(np.percentile(simulated_returns, upper_percentile))
+        )
+        
+        median_return = float(np.median(simulated_returns))
+        mean_return = float(np.mean(simulated_returns))
+        probability_of_loss = float(np.sum(simulated_returns < 0) / n_simulations)
+        
+        # Calculate additional risk metrics
+        std_dev = float(np.std(simulated_returns))
+        skewness = float(np.mean(((simulated_returns - mean_return) / std_dev) ** 3))
+        kurtosis = float(np.mean(((simulated_returns - mean_return) / std_dev) ** 4))
+        
+        return {
+            'n_simulations': n_simulations,
+            'confidence_level': confidence_level,
+            'confidence_interval': {
+                'lower': confidence_interval[0],
+                'upper': confidence_interval[1]
+            },
+            'median_return': median_return,
+            'expected_return': mean_return,
+            'std_deviation': std_dev,
+            'probability_of_loss': probability_of_loss,
+            'skewness': skewness,
+            'kurtosis': kurtosis,
+            'target_duration': self.target_duration,
+            'method': method
+        }

@@ -22,11 +22,18 @@ async def create_portfolio(
 ):
     """
     Create a new portfolio for the authenticated user.
+    
+    **Account Types:**
+    - `taxable`: Regular brokerage account (supports fractional shares)
+    - `roth_ira`: Roth IRA retirement account (whole shares only)
+    - `traditional_ira`: Traditional IRA retirement account (whole shares only)
+    - `401k`: 401(k) retirement account (whole shares only)
     """
     new_portfolio = Portfolio(
         user_id=current_user.id,
         name=portfolio_data.name,
-        description=portfolio_data.description
+        description=portfolio_data.description,
+        account_type=portfolio_data.account_type
     )
     
     db.add(new_portfolio)
@@ -100,6 +107,8 @@ async def update_portfolio(
         portfolio.name = portfolio_data.name
     if portfolio_data.description is not None:
         portfolio.description = portfolio_data.description
+    if portfolio_data.account_type is not None:
+        portfolio.account_type = portfolio_data.account_type
     
     db.commit()
     db.refresh(portfolio)

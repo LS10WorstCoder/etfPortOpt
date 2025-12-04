@@ -18,7 +18,7 @@ router = APIRouter(tags=["analytics"])
 @router.post("/portfolios/{portfolio_id}/analyze")
 async def analyze_portfolio(
     portfolio_id: str,
-    period: str = Query(default="1y", regex="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
+    period: str = Query(default="1y", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
     save_results: bool = Query(default=True),
     use_cache: bool = Query(default=True),
     current_user: User = Depends(get_current_user),
